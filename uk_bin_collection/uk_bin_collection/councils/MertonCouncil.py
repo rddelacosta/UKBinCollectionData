@@ -1,14 +1,14 @@
 """
-Updated Merton Council Bin Collection Scraper
-URL changed from myneighbourhood.merton.gov.uk to fixmystreet.merton.gov.uk/waste
+Merton Council Bin Collection Scraper
+Updated for new FixMyStreet platform: https://fixmystreet.merton.gov.uk/waste/{id}
 """
 from bs4 import BeautifulSoup
 from selenium import webdriver
-from selenium.webdriver.common.by import By
+from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from selenium.common.exceptions import TimeoutException
 from datetime import datetime
+import time
+import re
 
 from uk_bin_collection.uk_bin_collection.common import *
 from uk_bin_collection.uk_bin_collection.get_bin_data import AbstractGetBinDataClass
@@ -17,209 +17,109 @@ from uk_bin_collection.uk_bin_collection.get_bin_data import AbstractGetBinDataC
 class CouncilClass(AbstractGetBinDataClass):
     """
     Concrete class for Merton Council bin collection scraper.
-    Now uses Selenium due to JavaScript-driven form on new FixMyStreet platform.
+    Uses Selenium to handle JavaScript-rendered content.
     """
 
     def parse_data(self, page: str, **kwargs) -> dict:
-        # Extract postcode from kwargs or URL
-        user_postcode = kwargs.get("postcode")
-        user_uprn = kwargs.get("uprn")
-        
-        if not user_postcode and not user_uprn:
-            raise ValueError("Postcode or UPRN is required for Merton Council")
-
-        # Set up Selenium WebDriver
         driver = None
-        page_source = None
         
         try:
-            driver = create_webdriver()
-            driver.get("https://fixmystreet.merton.gov.uk/waste")
+            # Configure Chrome for headless operation
+            chrome_options = Options()
+            chrome_options.add_argument("--headless")
+            chrome_options.add_argument("--no-sandbox")
+            chrome_options.add_argument("--disable-dev-shm-usage")
             
-            # Wait for and find the postcode input field
-            wait = WebDriverWait(driver, 15)
-            
+            # Use framework's webdriver or create manually
             try:
-                postcode_input = wait.until(
-                    EC.presence_of_element_located((By.ID, "pc"))
-                )
-            except TimeoutException:
-                raise Exception("Could not load Merton waste collection page - postcode input not found")
+                driver = create_webdriver()
+            except:
+                driver = webdriver.Chrome(options=chrome_options)
             
-            # Enter postcode
-            postcode_input.clear()
-            postcode_input.send_keys(user_postcode if user_postcode else user_uprn)
+            # Extract URL from page parameter
+            url = str(page) if hasattr(page, '__str__') else page
+            if hasattr(page, 'url'):
+                url = page.url
             
-            # Click the submit button
+            driver.get(url)
+            
+            # Wait for JavaScript to load content
             try:
-                submit_button = driver.find_element(By.CSS_SELECTOR, "input[type='submit']")
-                submit_button.click()
-            except Exception as e:
-                raise Exception(f"Could not submit postcode form: {e}")
-            
-            # Wait for address selection or results page
-            try:
-                # Check if address selector appears (multiple addresses for postcode)
-                from selenium.webdriver.support.ui import Select
-                address_select = wait.until(
-                    EC.presence_of_element_located((By.ID, "address"))
-                )
-                
-                # Select first address option (skip the placeholder)
-                select = Select(address_select)
-                if len(select.options) > 1:
-                    select.select_by_index(1)  # Select first real address
-                else:
-                    raise Exception(f"No addresses found for postcode {user_postcode}")
-                
-                # Click go button
-                go_button = driver.find_element(By.CSS_SELECTOR, "input[type='submit']")
-                go_button.click()
-                
-            except TimeoutException:
-                # No address selector, might have gone straight to results
+                wait = WebDriverWait(driver, 20)
+                wait.until(lambda d: "Food waste" in d.page_source)
+            except:
                 pass
             
-            # Wait for collection schedule to load
-            try:
-                wait.until(
-                    EC.presence_of_element_located((By.CSS_SELECTOR, ".waste-service, .collection-item, [class*='waste'], [class*='collection']"))
-                )
-            except TimeoutException:
-                raise Exception("Collection schedule did not load - no collection data found on page")
-            
-            # Get the page source for parsing
+            time.sleep(5)  # Additional wait for dynamic content
             page_source = driver.page_source
-            
-        except Exception as e:
-            # Re-raise with context
-            raise Exception(f"Selenium scraping failed for Merton Council: {e}")
-            
+                
         finally:
             if driver:
                 driver.quit()
         
-        if not page_source:
-            raise Exception("Failed to retrieve page content")
-        
-        # Parse the results page
+        # Parse the HTML
         soup = BeautifulSoup(page_source, "html.parser")
         data = {"bins": []}
         
-        # Try multiple possible container class names (site structure may vary)
-        waste_services = (
-            soup.find_all("div", class_="waste-service") or
-            soup.find_all("section", class_="waste-service") or
-            soup.find_all("div", class_=lambda x: x and "waste" in x.lower()) or
-            soup.find_all("div", class_=lambda x: x and "collection" in x.lower())
-        )
-        
-        if not waste_services:
-            raise Exception("Could not find waste service containers on results page")
-        
-        possible_date_formats = [
-            "%A %d %B %Y",     # "Friday 24 October 2025"
-            "%A %d %B",        # "Friday 24 October"
-            "%d %B %Y",        # "24 October 2025"
-            "%d %B",           # "24 October"
-            "%d/%m/%Y",        # "24/10/2025"
-            "%d-%m-%Y",        # "24-10-2025"
+        # Bin types to extract
+        bin_types = [
+            "Garden Waste",
+            "Food waste", 
+            "Mixed recycling",
+            "Paper and card",
+            "Non-recyclable waste"
         ]
         
         current_year = datetime.now().year
+        today = datetime.now()
         
-        for service in waste_services:
-            try:
-                # Extract bin type from heading (try multiple tag types)
-                heading = service.find(["h2", "h3", "h4", "strong"])
-                if not heading:
-                    # Try finding by class
-                    heading = service.find(class_=lambda x: x and any(term in x.lower() for term in ["title", "name", "type"]))
-                
-                if not heading:
-                    continue
-                    
-                bin_type = heading.get_text(strip=True)
-                
-                # Skip empty bin types
-                if not bin_type or bin_type.lower() in ["", " "]:
-                    continue
-                
-                # Find the "Next collection" date
-                next_collection_date = None
-                
-                # Look for paragraphs, divs, or definition lists containing collection info
-                info_elements = service.find_all(["p", "div", "dd", "dt", "span", "li"])
-                
-                for element in info_elements:
-                    text = element.get_text()
-                    text_lower = text.lower()
-                    
-                    if "next collection" in text_lower:
-                        # Extract date from the text
-                        date_text = None
-                        
-                        if ":" in text:
-                            # Date after colon: "Next collection: Friday 24 October"
-                            date_text = text.split(":", 1)[1].strip()
-                        else:
-                            # Look for bold tags
-                            bold = element.find(["b", "strong"])
-                            if bold:
-                                date_text = bold.get_text(strip=True)
-                            else:
-                                # Remove "Next collection" text
-                                date_text = text.replace("Next collection", "").replace("next collection", "").strip()
-                        
-                        # Clean up common prefixes
-                        for prefix in ["on ", "is ", "date "]:
-                            if date_text and date_text.lower().startswith(prefix):
-                                date_text = date_text[len(prefix):].strip()
-                        
-                        if date_text and len(date_text) > 3:
-                            # Try parsing with different formats
-                            for fmt in possible_date_formats:
-                                try:
-                                    parsed_date = datetime.strptime(date_text, fmt)
-                                    
-                                    # If year not in format, use current or next year
-                                    if "%Y" not in fmt:
-                                        parsed_date = parsed_date.replace(year=current_year)
-                                        
-                                        # If date is in the past, assume next year
-                                        if parsed_date < datetime.now():
-                                            parsed_date = parsed_date.replace(year=current_year + 1)
-                                    
-                                    next_collection_date = parsed_date
-                                    break
-                                    
-                                except ValueError:
-                                    continue
-                        
-                        if next_collection_date:
-                            break
-                
-                # Add to data if we found a valid date
-                if next_collection_date:
-                    dict_data = {
-                        "type": bin_type,
-                        "collectionDate": next_collection_date.strftime(date_format),
-                    }
-                    data["bins"].append(dict_data)
-                    
-            except Exception as e:
-                # Log but don't fail entire scrape if one bin fails
-                print(f"Warning: Failed to parse bin service: {e}")
+        # Date pattern: "Friday 7 November"
+        date_pattern = r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)'
+        
+        # Extract collection dates for each bin type
+        for bin_type in bin_types:
+            # Find the h3 header containing this bin type
+            bin_header = soup.find('h3', text=re.compile(re.escape(bin_type), re.I))
+            if not bin_header:
                 continue
+            
+            # Find the next "Next collection" dt element
+            next_dt = bin_header.find_next('dt', text=re.compile(r'Next collection', re.I))
+            if not next_dt:
+                continue
+            
+            # Get the dd sibling containing the date
+            next_dd = next_dt.find_next_sibling('dd')
+            if not next_dd:
+                continue
+            
+            # Extract and parse the date
+            dd_text = next_dd.get_text(strip=True)
+            date_match = re.search(date_pattern, dd_text)
+            
+            if date_match:
+                date_str = date_match.group(0)
+                try:
+                    parsed_date = datetime.strptime(date_str, "%A %d %B")
+                    parsed_date = parsed_date.replace(year=current_year)
+                    
+                    # Handle year-end rollover (Dec→Jan)
+                    if parsed_date < today:
+                        parsed_date = parsed_date.replace(year=current_year + 1)
+                    
+                    # Add to results (avoid duplicates)
+                    if not any(b["type"] == bin_type for b in data["bins"]):
+                        data["bins"].append({
+                            "type": bin_type,
+                            "collectionDate": parsed_date.strftime(date_format),
+                        })
+                except ValueError:
+                    continue
         
         if not data["bins"]:
-            raise Exception("No collection dates found - page structure may have changed")
+            raise Exception("No collection dates found")
         
         # Sort by collection date
-        try:
-            data["bins"].sort(key=lambda x: datetime.strptime(x["collectionDate"], date_format))
-        except Exception:
-            # If sorting fails, return unsorted
-            pass
+        data["bins"].sort(key=lambda x: datetime.strptime(x["collectionDate"], date_format))
         
         return data
