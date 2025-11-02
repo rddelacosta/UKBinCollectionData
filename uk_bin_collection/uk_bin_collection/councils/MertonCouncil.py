@@ -6,8 +6,10 @@ from bs4 import BeautifulSoup
 from selenium import webdriver
 from selenium.webdriver.chrome.options import Options
 from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC  # <-- Import EC
+from selenium.webdriver.common.by import By                        # <-- Import By
 from datetime import datetime
-import time
+# import time  <-- No longer need time.sleep()
 import re
 
 from uk_bin_collection.uk_bin_collection.common import *
@@ -17,7 +19,7 @@ from uk_bin_collection.uk_bin_collection.get_bin_data import AbstractGetBinDataC
 class CouncilClass(AbstractGetBinDataClass):
     """
     Concrete class for Merton Council bin collection scraper.
-    Uses Selenium to handle JavaScript-rendered content.
+    Uses Selenium to handle JavaScript-rendered content with a robust explicit wait.
     """
 
     def parse_data(self, page: str, **kwargs) -> dict:
@@ -43,14 +45,22 @@ class CouncilClass(AbstractGetBinDataClass):
             
             driver.get(url)
             
-            # Wait for JavaScript to load content
+            # --- START OF FIX ---
+            # Replace the simple text wait and time.sleep() with a
+            # robust wait for a specific element (one of the <h3> bin types).
+            # This fixes the 'NoneType' error by ensuring the page is
+            # fully rendered before we parse it.
             try:
-                wait = WebDriverWait(driver, 20)
-                wait.until(lambda d: "Food waste" in d.page_source)
-            except:
-                pass
-            
-            time.sleep(5)  # Additional wait for dynamic content
+                WebDriverWait(driver, 30).until(
+                    EC.presence_of_element_located(
+                        (By.XPATH, "//h3[contains(text(), 'Non-recyclable waste')]")
+                    )
+                )
+            except Exception as e:
+                # Catch timeout or other Selenium errors
+                raise Exception(f"Selenium failed to load page or find element: {e}")
+            # --- END OF FIX ---
+
             page_source = driver.page_source
                 
         finally:
