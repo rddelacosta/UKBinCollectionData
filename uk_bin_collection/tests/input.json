@@ -1501,10 +1501,9 @@
     },
     "MertonCouncil": {
         "url": "https://fixmystreet.merton.gov.uk/waste/4473006",
-        "web_driver": "http://selenium:4444",
         "wiki_command_url_override": "https://fixmystreet.merton.gov.uk/waste/XXXXXXXX",
         "wiki_name": "Merton",
-        "wiki_note": "Go to https://fixmystreet.merton.gov.uk/waste, find your address, and copy the URL. The ID at the end is your UPRN. Replace XXXXXXXX in the URL with your UPRN/ID. Requires Selenium.",
+        "wiki_note": "Go to https://fixmystreet.merton.gov.uk/waste, find your address, and copy the URL. The ID at the end is your UPRN. Replace XXXXXXXX in the URL with your UPRN/ID.",
         "LAD24CD": "E09000024"
     },
     "MidAndEastAntrimBoroughCouncil": {
