@@ -51,9 +51,12 @@ class CouncilClass(AbstractGetBinDataClass):
             # This fixes the 'NoneType' error by ensuring the page is
             # fully rendered before we parse it.
             try:
-                WebDriverWait(driver, 30).until(
+                WebDriverWait(driver, 45).until(
                     EC.presence_of_element_located(
-                        (By.XPATH, "//h3[contains(text(), 'Non-recyclable waste')]")
+                        (By.XPATH, "//h3[contains(text(), 'Non-recyclable waste') or "
+                                   "contains(text(), 'Food waste') or "
+                                   "contains(text(), 'Mixed recycling') or "
+                                   "contains(text(), 'Paper and card')]")
                     )
                 )
             except Exception as e:
