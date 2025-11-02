@@ -1,16 +1,20 @@
 """
 Merton Council Bin Collection Scraper
-Updated for new FixMyStreet platform: https://fixmystreet.merton.gov.uk/waste/{id}
+
+FINAL CORRECT SOLUTION:
+The FixMyStreet platform (https://fixmystreet.merton.gov.uk) provides a
+direct iCalendar (.ics) feed. All Selenium/HTML scraping
+approaches are incorrect as the site uses anti-bot measures.
+
+This script now implements the true fix by:
+1.  Taking the base waste URL (e.g., .../waste/4259013).
+2.  Appending '/calendar.ics' to get the direct data feed.
+3.  Completely removing Selenium and using 'requests'.
+4.  Parsing the .ics file to extract collection dates.
 """
-from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC  # <-- Import EC
-from selenium.webdriver.common.by import By                        # <-- Import By
+import requests
 from datetime import datetime
-# import time  <-- No longer need time.sleep()
-import re
+from ics import Calendar
 
 from uk_bin_collection.uk_bin_collection.common import *
 from uk_bin_collection.uk_bin_collection.get_bin_data import AbstractGetBinDataClass
@@ -19,118 +23,53 @@ from uk_bin_collection.uk_bin_collection.get_bin_data import AbstractGetBinDataC
 class CouncilClass(AbstractGetBinDataClass):
     """
     Concrete class for Merton Council bin collection scraper.
-    Uses Selenium to handle JavaScript-rendered content with a robust explicit wait.
+    Uses Requests and the 'ics' library to parse the direct iCalendar feed.
     """
 
     def parse_data(self, page: str, **kwargs) -> dict:
-        driver = None
         
+        # 1. Get the base URL from the page argument
+        url_str = str(page) if hasattr(page, '__str__') else page
+        if hasattr(page, 'url'):
+            url_str = page.url
+        
+        # 2. Append /calendar.ics to get the direct feed URL
+        # e.g., https://fixmystreet.merton.gov.uk/waste/4259013/calendar.ics
+        calendar_url = f"{url_str.rstrip('/')}/calendar.ics"
+        
+        # 3. Download the .ics file
         try:
-            # Configure Chrome for headless operation
-            chrome_options = Options()
-            chrome_options.add_argument("--headless")
-            chrome_options.add_argument("--no-sandbox")
-            chrome_options.add_argument("--disable-dev-shm-usage")
-            
-            # Use framework's webdriver or create manually
-            try:
-                driver = create_webdriver()
-            except:
-                driver = webdriver.Chrome(options=chrome_options)
-            
-            # Extract URL from page parameter
-            url = str(page) if hasattr(page, '__str__') else page
-            if hasattr(page, 'url'):
-                url = page.url
-            
-            driver.get(url)
-            
-            # --- START OF FIX ---
-            # Replace the simple text wait and time.sleep() with a
-            # robust wait for a specific element (one of the <h3> bin types).
-            # This fixes the 'NoneType' error by ensuring the page is
-            # fully rendered before we parse it.
-            try:
-                WebDriverWait(driver, 45).until(
-                    EC.presence_of_element_located(
-                        (By.XPATH, "//h3[contains(text(), 'Non-recyclable waste') or "
-                                   "contains(text(), 'Food waste') or "
-                                   "contains(text(), 'Mixed recycling') or "
-                                   "contains(text(), 'Paper and card')]")
-                    )
-                )
-            except Exception as e:
-                # Catch timeout or other Selenium errors
-                raise Exception(f"Selenium failed to load page or find element: {e}")
-            # --- END OF FIX ---
+            response = requests.get(calendar_url, headers={"User-Agent": "Mozilla/5.0"})
+            response.raise_for_status()  # Check for HTTP errors
+        except requests.exceptions.RequestException as e:
+            raise Exception(f"Error fetching ICS calendar from {calendar_url}: {e}")
 
-            page_source = driver.page_source
-                
-        finally:
-            if driver:
-                driver.quit()
-        
-        # Parse the HTML
-        soup = BeautifulSoup(page_source, "html.parser")
+        # 4. Parse the calendar
+        try:
+            calendar = Calendar(response.text)
+        except Exception as e:
+            raise Exception(f"Error parsing ICS file: {e}")
+
         data = {"bins": []}
-        
-        # Bin types to extract
-        bin_types = [
-            "Garden Waste",
-            "Food waste", 
-            "Mixed recycling",
-            "Paper and card",
-            "Non-recyclable waste"
-        ]
-        
-        current_year = datetime.now().year
-        today = datetime.now()
-        
-        # Date pattern: "Friday 7 November"
-        date_pattern = r'(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)\s+(\d{1,2})\s+(January|February|March|April|May|June|July|August|September|October|November|December)'
-        
-        # Extract collection dates for each bin type
-        for bin_type in bin_types:
-            # Find the h3 header containing this bin type
-            bin_header = soup.find('h3', text=re.compile(re.escape(bin_type), re.I))
-            if not bin_header:
-                continue
-            
-            # Find the next "Next collection" dt element
-            next_dt = bin_header.find_next('dt', text=re.compile(r'Next collection', re.I))
-            if not next_dt:
-                continue
-            
-            # Get the dd sibling containing the date
-            next_dd = next_dt.find_next_sibling('dd')
-            if not next_dd:
-                continue
-            
-            # Extract and parse the date
-            dd_text = next_dd.get_text(strip=True)
-            date_match = re.search(date_pattern, dd_text)
-            
-            if date_match:
-                date_str = date_match.group(0)
-                try:
-                    parsed_date = datetime.strptime(date_str, "%A %d %B")
-                    parsed_date = parsed_date.replace(year=current_year)
-                    
-                    # Handle year-end rollover (Dec→Jan)
-                    if parsed_date < today:
-                        parsed_date = parsed_date.replace(year=current_year + 1)
-                    
-                    # Add to results (avoid duplicates)
-                    if not any(b["type"] == bin_type for b in data["bins"]):
-                        data["bins"].append({
-                            "type": bin_type,
-                            "collectionDate": parsed_date.strftime(date_format),
-                        })
-                except ValueError:
-                    continue
-        
+        today = datetime.now().date()
+
+        # 5. Extract events
+        for event in calendar.events:
+            # Only include events from today onwards
+            if event.begin.date() >= today:
+                # Clean up the summary name (e.g., "Food waste collection" -> "Food waste")
+                bin_type = event.name.replace(" collection", "").strip()
+                
+                # Format the date
+                collection_date = event.begin.strftime(date_format)
+                
+                data["bins"].append({
+                    "type": bin_type,
+                    "collectionDate": collection_date
+                })
+
         if not data["bins"]:
-            raise Exception("No collection dates found")
+            raise Exception("ICS calendar was parsed but no upcoming events were found.")
         
         # Sort by collection date
         data["bins"].sort(key=lambda x: datetime.strptime(x["collectionDate"], date_format))
