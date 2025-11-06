@@ -10,6 +10,6 @@
     "iot_class": "cloud_polling",
     "issue_tracker": "https://github.com/robbrad/UKBinCollectionData/issues",
     "requirements": [],
-    "version": "0.160.1",
+    "version": "0.160.1-rddelacosta-1",
     "zeroconf": []
 }
